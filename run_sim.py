@@ -4,7 +4,7 @@ import struct
 from scipy.linalg import cho_solve
 import os.path as osp
 from numpy.linalg import cholesky, inv
-from scipy.optimize import fmin
+from scipy.optimize import fmin, minimize
 import cPickle as pickle
 from hashlib import md5
 import sys
@@ -21,14 +21,19 @@ class plik_lite_binned(SlikPlugin):
     A binned plik_lite likelihood using the files distributed with Clik
     """    
 
-    def __init__(self,clik_folder,lslice,cl=None):
+    def __init__(self,
+                 clik_folder,
+                 lslice,
+                 calPlanck=1,
+                 cl=None):
         """
         clik_folder : path to plik_lite_v18_TT.clik
         lslice : a slice object indicating the l-range used, e.g. `slice(30,800)`
         """
         super(plik_lite_binned,self).__init__()
         root = osp.join(clik_folder,'clik','lkl_0','_external')
-
+        self.calPlanck = calPlanck
+        
         #bin specs
         self.blmin=array(loadtxt(osp.join(root,'blmin.dat')),dtype=int)
         self.blmax=array(loadtxt(osp.join(root,'blmax.dat')),dtype=int)
@@ -49,7 +54,7 @@ class plik_lite_binned(SlikPlugin):
 
     def __call__(self,cl):
         #compute likelihood
-        dcl = self.bin(cl)[self.bslice] - self.cl
+        dcl = self.bin(cl)[self.bslice]*self.calPlanck**2 - self.cl
         return dot(dcl,cho_solve(self.cho_cov,dcl))/2
 
         
@@ -101,8 +106,8 @@ class planck(SlikPlugin):
             mnu = 0.06,
         )
         self.get_cmb = get_plugin('models.camb')()
-        self.priors = get_plugin('likelihoods.priors')(self)
                 
+        self.calPlanck=param(1,0.0025,gaussian_prior=(1,0.0025))
 
         self.highl = plik_lite_binned(
             clik_folder='plik_lite_v18_TT.clik',
@@ -120,20 +125,21 @@ class planck(SlikPlugin):
                 class clikwrap(clik):
                     def __call__(self,cl):
                         return super(clikwrap,self).__call__({'cl_TT':cl*arange(cl.size)*(arange(cl.size)+1)/2/pi})
-                self.lowl=clikwrap(
-                    clik_file='commander_rc2_v1.1_l2_29_B.clik',
-                    A_planck=1
-                )
+
+                self.lowl=clikwrap(clik_file='commander_rc2_v1.1_l2_29_B.clik')
         else:
             assert lslice.start>=30, "can't slice lowl likelihood"
             self.lowl=None
         
 
+        self.priors = get_plugin('likelihoods.priors')(self)
         self.sampler = Minimizer(self)
         
 
     def __call__(self):
         self.cosmo.As = exp(self.cosmo.logA)*1e-10
+        self.highl.calPlanck = self.calPlanck
+        if self.lowl: self.lowl.A_planck = self.calPlanck
 
         self.clTT = self.get_cmb(ns=self.cosmo.ns,
                                  As=self.cosmo.As,
@@ -141,7 +147,8 @@ class planck(SlikPlugin):
                                  omch2=self.cosmo.omch2,
                                  H0=self.cosmo.H0,
                                  tau=self.cosmo.tau,
-                                 lmax=3000)['cl_TT'][:2509]
+                                 lmax=3000,
+                                 **self.get('cambargs',{}))['cl_TT'][:2509]
         self.clTT[2:] *= (2*pi/arange(2,2509)/(arange(2,2509)+1))
 
         return lsum(lambda: self.priors(self),
@@ -155,15 +162,17 @@ class Minimizer(SlikSampler):
         super(Minimizer,self).__init__(**all_kw(locals(),['params']))
         self.sampled = params.find_sampled()
         self.x0 = [params[k].start for k in self.sampled]
+        self.eps = [params[k].scale/10. for k in self.sampled]
     
     def sample(self,lnl):
                 
+        xrs = array([x.scale for x in self.sampled.values()])
         def f(x,**kwargs):
-            l = lnl(*x,**kwargs)[0]
-            mspec_log(str((l,x)))
+            l = lnl(*(x*xrs),**kwargs)[0]
+            mspec_log(str((l,x*xrs)))
             return l
                     
-        res = fmin(f,self.x0,xtol=0.0001,disp=False)
+        res = minimize(f,self.x0/xrs,method='BFGS',tol=1e-4,options=dict(eps=1e-4,disp=False))
         yield res
 
 
@@ -175,8 +184,8 @@ if __name__=='__main__':
 
     work = []
     for lmin in (2,30):
-        for lsplit in range(600,2550,50):
-            work.append((lmin,lsplit))
+        for lsplit in range(100,2550,50):
+            if lsplit>=650: work.append((lmin,lsplit))
             if lsplit<1700: work.append((lsplit,2509))
     mspec_log('All work: %s'%work,rootlog=True)
 
