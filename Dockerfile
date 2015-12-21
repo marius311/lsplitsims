@@ -17,7 +17,19 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && update-alternatives --install /usr/bin/gfortran gfortran /usr/bin/gfortran-4.9 20
 
+# needed for interactive work:
+RUN apt-get update \
+    && apt-get install -y \ 
+        python-pip \
+        python-matplotlib \
+    && pip install jupyter pypico
+EXPOSE 8888
+
+# so the root-created files below are read/write-able by default
+# and see https://github.com/docker/docker/issues/14651
+RUN umask a+rw && rm -rf /root && mkdir /root-created
 WORKDIR /root
+
 
 #install healpy
 # RUN curl -L https://pypi.python.org/packages/source/h/healpy/healpy-1.9.1.tar.gz | tar zxf - \
@@ -29,7 +41,7 @@ WORKDIR /root
 # install cosmoslik/mspec
 RUN mkdir cosmoslik mspec camb \
     && curl -L https://github.com/marius311/cosmoslik/archive/cd23e4a.tar.gz | tar zxf - -C cosmoslik --strip-components=1 \
-    && curl -L https://github.com/marius311/mspec/archive/9e167a0.tar.gz     | tar zxf - -C mspec     --strip-components=1
+    && curl -L https://github.com/marius311/mspec/archive/112ca2f.tar.gz     | tar zxf - -C mspec     --strip-components=1
 ENV PYTHONPATH=/root/mspec:/root/cosmoslik
 
 # install camb
@@ -50,8 +62,11 @@ ADD commander_rc2_v1.1_l2_29_B.clik.tgz \
     base_plikHM_TT_tau07.minimum.theory_cl \
     run_sim.py \
     /root/
+ENV PYTHONPATH=/root:$PYTHONPATH
 
-# cleanup build packages we don't need
+
+# cleanup build packages:
+# 
 # RUN apt-get remove -y --purge \
 #         curl \
 #         cython \
@@ -67,4 +82,5 @@ ADD commander_rc2_v1.1_l2_29_B.clik.tgz \
 #     && apt-get install libgomp1 \
 #     && rm -rf /var/lib/apt/lists/* /root/plc-2.0/build /root/plc-2.0/src /usr/share
 
-ENTRYPOINT ["python","run_sim.py"]
+
+CMD jupyter-notebook --ip=* --no-browser
