@@ -93,7 +93,9 @@ class lowl(SlikPlugin):
 
 class planck(SlikPlugin):
 
-    def __init__(self, lslice=slice(2,2509), sim=True, fidcl=None, cl=None, model='lcdm', action='minimize'):
+    def __init__(self, lslice=slice(2,2509), sim=True, fidcl=None, cl=None, model='lcdm', 
+                 action='minimize', cov='../planck_2_2500.covmat'):
+
         super(planck,self).__init__(**all_kw(locals()))
 
         self.cosmo = get_plugin('models.cosmology')(
@@ -111,7 +113,7 @@ class planck(SlikPlugin):
         self.calPlanck=param(1,0.0025,gaussian_prior=(1,0.0025))
 
         self.highl = plik_lite_binned(
-            clik_folder='plik_lite_v18_TT.clik',
+            clik_folder='../plik_lite_v18_TT.clik',
             lslice=lslice,
             cl=cl
         )
@@ -127,7 +129,7 @@ class planck(SlikPlugin):
                     def __call__(self,cl):
                         return super(clikwrap,self).__call__({'cl_TT':cl*arange(cl.size)*(arange(cl.size)+1)/2/pi})
 
-                self.lowl=clikwrap(clik_file='commander_rc2_v1.1_l2_29_B.clik')
+                self.lowl=clikwrap(clik_file='../commander_rc2_v1.1_l2_29_B.clik')
         else:
             assert lslice.start>=30, "can't slice lowl likelihood"
             self.lowl=None
@@ -135,14 +137,14 @@ class planck(SlikPlugin):
 
         self.priors = get_plugin('likelihoods.priors')(self)
         if action=='minimize':
-            self.sampler = Minimizer(self)
+            self.sampler = Minimizer(self,whiten_cov=cov)
         else:
             self.sampler = get_plugin('samplers.metropolis_hastings')(
                                 self,
                                 num_samples=1e6,
                                 print_level=2,
                                 output_file='results/test_chain_%i_%i.chain'%(lslice.start,lslice.stop),
-                                proposal_cov='planck_lcdm.covmat'
+                                proposal_cov=cov,
                            )
         
 
@@ -168,26 +170,36 @@ class planck(SlikPlugin):
 
 class Minimizer(SlikSampler):
     
-    def __init__(self,params):
+    def __init__(self,params,whiten_cov=None,initial_scatter=1):
         super(Minimizer,self).__init__(**all_kw(locals(),['params']))
         self.sampled = params.find_sampled()
         self.x0 = [params[k].start for k in self.sampled]
         self.eps = [params[k].scale/10. for k in self.sampled]
     
+        if whiten_cov is None: 
+            self.G = identity(len(self.x0))
+        else:
+            with open(whiten_cov) as f:
+                prop_names = f.readline().replace('#','').split()
+                idxs = [prop_names.index(k) for k in self.sampled]
+                self.G = cholesky(loadtxt(f)[ix_(idxs,idxs)]).T
+
+
     def sample(self,lnl):
 
-        xrs = array([x.scale for x in self.sampled.values()])
         def f(x,**kwargs):
-            l = lnl(*(x*xrs),**kwargs)[0]
-            if '--debug' in sys.argv: mspec_log(str((l,x*xrs)))
+            y = dot(self.G,x)
+            l = lnl(*y,**kwargs)[0]
+            if '--debug' in sys.argv: mspec_log(str((l,zip(self.sampled,y))))
             return l
                     
-        res = minimize(f,self.x0/xrs,method='Nelder-Mead',options=dict(xtol=1e-4,ftol=1e-4,disp=False))
-        yield res*xrs
+        x0=dot(inv(self.G),self.x0)+self.initial_scatter*normal(size=len(self.x0))
+        res = minimize(f,x0,method='Powell',options=dict(xtol=1e-4,ftol=1e-4,disp=False))
+        yield dot(self.G,res.x), dot(self.G,x0), res
 
 
 tocl=2*pi/arange(2,2509)/(arange(2,2509)+1)
-fidcl=hstack([zeros(2),loadtxt("base_plikHM_TT_tau07.minimum.theory_cl")[:,1]*tocl])
+fidcl=hstack([zeros(2),loadtxt("../base_plikHM_TT_tau07.minimum.theory_cl")[:,1]*tocl])
 
 
 if __name__=='__main__':
@@ -200,11 +212,11 @@ if __name__=='__main__':
     else:
 
         work = []
-        for lmin in (2,30):
-            for lsplit in range(100,2500,50)+[2510]:
+        for lsplit in range(100,2500,50)+[2510]:
+            if lsplit<1700: work.append((lsplit,2510))
+            for lmin in (2,30):
                 if lsplit>=650: work.append((lmin,lsplit))
-                if lsplit<1700: work.append((lsplit,2510))
-        mspec_log('All work: %s'%work,rootlog=True)
+        mspec_log('All work (%i): %s'%(len(work),work),rootlog=True)
 
         if '--real' in sys.argv:
 
@@ -213,22 +225,24 @@ if __name__=='__main__':
                     
             def do_run(lslice):
                 mspec_log('Doing: %s'%str(lslice))
-                s=Slik(planck(fidcl=fidcl,lslice=slice(*lslice),sim=False))
-                bf = s.sample().next()
+                s = Slik(planck(fidcl=fidcl,lslice=slice(*lslice),sim=False))
+                bf,x0,res = s.sample().next()
 
                 #postprocessing
-                s.params.cambargs={'redshifts':[0]}
-                lnl,p=s.evaluate(*bf)
+                s.params.cambargs = {'redshifts':[0]}
+                lnl,p = s.evaluate(*bf)
                 pp = dict(zip(s.get_sampled(),bf))
                 pp.update({'cosmo.theta':100*p.get_cmb.result.cosmomc_theta(),
                            'cosmo.ommh2':pp['cosmo.omch2']+pp['cosmo.ombh2'],
-                           'cosmo.sigma8':p.get_cmb.result.get_sigma8()[0],
+                           # 'cosmo.sigma8':p.get_cmb.result.get_sigma8()[0],
                            'cosmo.clamp':exp(pp['cosmo.logA'])*exp(-2*pp['cosmo.tau'])/10,
                            'lnl':lnl,
                            'highl_chi2':2*p.highl(p.clTT),
                            'highl_dof':p.highl.bslice.stop - p.highl.bslice.start,
-                           'clTT':p.clTT})
-                pp['cosmo.s8omm1/4']=pp['cosmo.sigma8']*(pp['cosmo.ommh2']/(pp['cosmo.H0']/100.)**2)**0.25
+                           'clTT':p.clTT,
+                           'res':res,
+                           'x0':x0})
+                # pp['cosmo.s8omm1/4']=pp['cosmo.sigma8']*(pp['cosmo.ommh2']/(pp['cosmo.H0']/100.)**2)**0.25
 
                 mspec_log('Got: %s'%str((lslice,pp)))
 
