@@ -27,7 +27,7 @@ EXPOSE 8888
 
 # so the root-created files below are read/write-able by default
 # and see https://github.com/docker/docker/issues/14651
-RUN umask a+rw && rm -rf /root && mkdir /root-created
+RUN umask a+rw && rm -rf /root && mkdir -p /root/shared
 WORKDIR /root
 
 
@@ -60,10 +60,12 @@ ENV PYTHONPATH=/root/plc-2.0/lib/python2.7/site-packages:$PYTHONPATH
 ADD commander_rc2_v1.1_l2_29_B.clik.tgz \
     plik_lite_v18_TT.clik.tgz \
     base_plikHM_TT_tau07.minimum.theory_cl \
-    run_sim.py \
     /root/
+ADD shared/run_sim.py /root/shared
 ENV PYTHONPATH=/root:$PYTHONPATH
 
+
+WORKDIR /root/shared
 
 # cleanup build packages:
 # 
