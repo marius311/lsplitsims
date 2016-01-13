@@ -26,7 +26,7 @@ class plik_lite_binned(SlikPlugin):
                  clik_folder,
                  lslice,
                  calPlanck=1,
-                 cl=None):
+                 sim=False):
         """
         clik_folder : path to plik_lite_v18_TT.clik
         lslice : a slice object indicating the l-range used, e.g. `slice(30,800)`
@@ -46,10 +46,19 @@ class plik_lite_binned(SlikPlugin):
         self.bslice=self.bin(lslice)
 
         #load data and covariance
-        self.cl = cl or loadtxt(osp.join(root,'cl_cmb_plik_v18.dat'))[self.bslice,1]
+        self.cl = loadtxt(osp.join(root,'cl_cmb_plik_v18.dat'))[:,1]
         f=open(osp.join(root,"c_matrix_plik_v18.dat")).read()
-        cov = self.cov = array(struct.unpack('d'*(len(f)/8-1),f[4:-4])).reshape(613,613)[self.bslice,self.bslice]
-        cov[cov==0]=cov.T[cov==0] #actually cholesky works fine without this, but do it for aesthetics... 
+        cov = self.cov = array(struct.unpack('d'*(len(f)/8-1),f[4:-4])).reshape(613,613)
+        cov[cov==0]=cov.T[cov==0] 
+
+        #possibly draw random spectrum
+        if sim: self.cl = random.multivariate_normal(self.bin(fidcl),self.cov)
+
+        #slice to lmin/lmax
+        self.cl = self.cl[self.bslice]
+        self.cov = self.cov[self.bslice,self.bslice]
+
+        #compute decomposition
         self.cho_cov = cholesky(self.cov), False
         
 
@@ -93,7 +102,7 @@ class lowl(SlikPlugin):
 
 class planck(SlikPlugin):
 
-    def __init__(self, lslice=slice(2,2509), sim=True, fidcl=None, cl=None, model='lcdm', 
+    def __init__(self, lslice=slice(2,2509), sim=False, model='lcdm', 
                  action='minimize', cov='../planck_2_2500.covmat'):
 
         super(planck,self).__init__(**all_kw(locals()))
@@ -115,13 +124,12 @@ class planck(SlikPlugin):
         self.highl = plik_lite_binned(
             clik_folder='../plik_lite_v18_TT.clik',
             lslice=lslice,
-            cl=cl
         )
 
         if lslice.start==2:
             if sim:
                 self.lowl=lowl(
-                   mask_file="commander_dx11d2_mask_temp_n0016_likelihood_v1.fits",
+                   mask_file="../commander_dx11d2_mask_temp_n0016_likelihood_v1.fits",
                    fidcl=fidcl
                 )
             else:
@@ -198,8 +206,6 @@ class Minimizer(SlikSampler):
         yield dot(self.G,res.x), dot(self.G,x0), res
 
 
-tocl=2*pi/arange(2,2509)/(arange(2,2509)+1)
-fidcl=hstack([zeros(2),loadtxt("../base_plikHM_TT_tau07.minimum.theory_cl")[:,1]*tocl])
 
 
 if __name__=='__main__':
@@ -211,42 +217,47 @@ if __name__=='__main__':
 
     else:
 
-        work = []
-        for lsplit in range(100,2500,50)+[2510]:
-            if lsplit<1700: work.append((lsplit,2510))
-            for lmin in (2,30):
-                if lsplit>=650: work.append((lmin,lsplit))
-        mspec_log('All work (%i): %s'%(len(work),work),rootlog=True)
+        tocl=2*pi/arange(2,2509)/(arange(2,2509)+1)
+        fidcl=hstack([zeros(2),loadtxt("../base_plikHM_TT_tau07.minimum.theory_cl")[:,1]*tocl])
+
+        def do_run(lslice, sim=False):
+            mspec_log('Doing: %s %s'%(lslice,'sim(%s)'%sys.argv[1] if sim else ''))
+            s = Slik(planck(lslice=slice(*lslice),sim=sim))
+            bf,x0,res = s.sample().next()
+
+            #postprocessing
+            s.params.cambargs = {'redshifts':[0]}
+            lnl,p = s.evaluate(*bf)
+            pp = dict(zip(s.get_sampled(),bf))
+            pp.update({'cosmo.theta':100*p.get_cmb.result.cosmomc_theta(),
+                       'cosmo.ommh2':pp['cosmo.omch2']+pp['cosmo.ombh2'],
+                       # 'cosmo.sigma8':p.get_cmb.result.get_sigma8()[0],
+                       'cosmo.clamp':exp(pp['cosmo.logA'])*exp(-2*pp['cosmo.tau'])/10,
+                       'lnl':lnl,
+                       'highl_chi2':2*p.highl(p.clTT),
+                       'highl_dof':p.highl.bslice.stop - p.highl.bslice.start,
+                       'clTT':p.clTT,
+                       'res':res,
+                       'x0':x0})
+            # pp['cosmo.s8omm1/4']=pp['cosmo.sigma8']*(pp['cosmo.ommh2']/(pp['cosmo.H0']/100.)**2)**0.25
+
+            mspec_log('Got: %s'%str((lslice,pp)))
+
+            return (lslice,pp)
+
 
         if '--real' in sys.argv:
+
+            work = []
+            for lsplit in range(100,2500,50)+[2510]:
+                if lsplit<1700: work.append((lsplit,2510))
+                for lmin in (2,30):
+                    if lsplit>=650: work.append((lmin,lsplit))
+            mspec_log('All work (%i): %s'%(len(work),work),rootlog=True)
 
             cl = 'cl_cmb_plik_bin1_v18.dat'
             results = {}
                     
-            def do_run(lslice):
-                mspec_log('Doing: %s'%str(lslice))
-                s = Slik(planck(fidcl=fidcl,lslice=slice(*lslice),sim=False))
-                bf,x0,res = s.sample().next()
-
-                #postprocessing
-                s.params.cambargs = {'redshifts':[0]}
-                lnl,p = s.evaluate(*bf)
-                pp = dict(zip(s.get_sampled(),bf))
-                pp.update({'cosmo.theta':100*p.get_cmb.result.cosmomc_theta(),
-                           'cosmo.ommh2':pp['cosmo.omch2']+pp['cosmo.ombh2'],
-                           # 'cosmo.sigma8':p.get_cmb.result.get_sigma8()[0],
-                           'cosmo.clamp':exp(pp['cosmo.logA'])*exp(-2*pp['cosmo.tau'])/10,
-                           'lnl':lnl,
-                           'highl_chi2':2*p.highl(p.clTT),
-                           'highl_dof':p.highl.bslice.stop - p.highl.bslice.start,
-                           'clTT':p.clTT,
-                           'res':res,
-                           'x0':x0})
-                # pp['cosmo.s8omm1/4']=pp['cosmo.sigma8']*(pp['cosmo.ommh2']/(pp['cosmo.H0']/100.)**2)**0.25
-
-                mspec_log('Got: %s'%str((lslice,pp)))
-
-                return (lslice,pp)
 
             results = mpi_map(do_run,work)
             pickle.dump(results,open('results/result_real','w'),protocol=2)
@@ -254,49 +265,12 @@ if __name__=='__main__':
 
         else:
 
-            highl = plik_lite(
-                cov='../../remote_data/cmbcls/c_matrix_plik_bin1_v18.dat',
-                cl='../../remote_data/cmbcls/cl_cmb_plik_bin1_v18.dat',
+            highl = plik_lite_binned(
+                clik_folder='../plik_lite_v18_TT.clik',
                 lslice=slice(30,2509)
             )
 
-            while True:
+            random.seed(int(sys.argv[1]))
 
-                cl = hstack([zeros(30),random.multivariate_normal(fidcl[highl.lslice],highl.cov)])
-
-                def do_run(lslice):
-                    mspec_log('Doing: %s'%str(lslice))
-                    p=Slik(planck(fidcl=fidcl,lslice=slice(*lslice),cl=cl[slice(*lslice)],sim=True))
-                    bf = p.sample().next()
-                    return (lslice,bf)
-
-
-                print 'Starting...'
-
-                p1=Slik(planck(fidcl=fidcl,lslice=slice(30,800),cl=cl[30:800],lowl='sim'))
-                lowbf = p1.sample().next()
-                print 'low: '+str(lowbf)
-
-                p2=Slik(planck(fidcl=fidcl,lslice=slice(30,800),cl=cl[30:800]))
-                midbf = p2.sample().next()
-                print 'mid: '+str(midbf)
-
-                p3=Slik(planck(fidcl=fidcl,lslice=slice(800,2509),cl=cl[800:2509]))
-                highbf = p3.sample().next()
-                print 'high: '+str(highbf)
-
-
-                pickle.dump(
-                    {
-                        'low':lowbf,
-                        'mid':midbf,
-                        'high':highbf,
-                        'high_cl':cl,
-                        'low_cl':p1.params.lowl.clobs
-                    },
-                    open('results/result_'+md5(str(cl)).hexdigest(),'w'),
-                    protocol=2
-                )
-
-                del p1,p2,p3
-                gc.collect()
+            r = do_run((int(sys.argv[2]),int(sys.argv[3])),sim=True)
+            pickle.dump(r,open('results/result_sim_%i_%i_%i'%(map(int,sys.argv[1:])),'w'),protocol=2)
