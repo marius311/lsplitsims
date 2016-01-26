@@ -1,8 +1,10 @@
+import healpy as H
+from mspec.get_kernels import quickkern
 from cosmoslik import *
 from numpy import *
 import struct
 from scipy.linalg import cho_solve, cholesky
-import os.path as osp
+import os, os.path as osp
 from numpy.linalg import inv
 from numpy.random import normal
 from scipy.optimize import fmin, minimize
@@ -15,6 +17,9 @@ from mspec import mpi_map, get_bin_func, mspec_log
 from cosmoslik_plugins.likelihoods.clik import clik
 
 param = param_shortcut('start','scale')
+
+tocl=2*pi/arange(2,2509)/(arange(2,2509)+1)
+fidcl=hstack([zeros(2),loadtxt("base_plikHM_TT_tau07.minimum.theory_cl")[:,1]*tocl])
 
 
 class plik_lite_binned(SlikPlugin):
@@ -48,7 +53,7 @@ class plik_lite_binned(SlikPlugin):
         #load data and covariance
         self.cl = loadtxt(osp.join(root,'cl_cmb_plik_v18.dat'))[:,1]
         f=open(osp.join(root,"c_matrix_plik_v18.dat")).read()
-        cov = self.cov = array(struct.unpack('d'*(len(f)/8-1),f[4:-4])).reshape(613,613)
+        cov = self.cov = array(struct.unpack('d'*(len(f)/8-1),f[4:-4])).reshape(613,613)[:215,:215]
         cov[cov==0]=cov.T[cov==0] 
 
         #possibly draw random spectrum
@@ -78,9 +83,6 @@ class lowl(SlikPlugin):
 
     def __init__(self,mask_file,fidcl):
 
-        import healpy as H
-        from mspec.get_kernels import quickkern
-
         self.mask = H.read_map(mask_file)
         self.fsky = self.mask.sum()/self.mask.size
 
@@ -103,7 +105,8 @@ class lowl(SlikPlugin):
 class planck(SlikPlugin):
 
     def __init__(self, lslice=slice(2,2509), sim=False, model='lcdm', 
-                 action='minimize', cov='../planck_2_2500.covmat'):
+                 action='minimize', cov='planck_2_2500.covmat',
+                 highl='custom'):
 
         super(planck,self).__init__(**all_kw(locals()))
 
@@ -121,23 +124,45 @@ class planck(SlikPlugin):
                 
         self.calPlanck=param(1,0.0025,gaussian_prior=(1,0.0025))
 
-        self.highl = plik_lite_binned(
-            clik_folder='../plik_lite_v18_TT.clik',
-            lslice=lslice,
-        )
+        class clikwrap(clik):
+            def __call__(self,cl):
+                return super(clikwrap,self).__call__({'cl_TT':cl*arange(cl.size)*(arange(cl.size)+1)/2/pi})
+
+        if highl=='custom':
+            self.highl = plik_lite_binned(clik_folder='plik_lite_v18_TT.clik',lslice=lslice,sim=sim)
+        elif highl=='plik_lite':
+            assert lslice.start in [2,30] and lslice.stop==2509
+            self.highl = clikwrap(clik_file='plik_lite_v18_TT.clik')
+        elif highl=='plik':
+            assert lslice.start in [2,30] and lslice.stop==2509
+            self.highl = clikwrap(
+                            clik_file='plik_v18_TT.clik',
+                            A_ps_100=param(150,min=0),
+                            A_ps_143=param(60,min=0),
+                            A_ps_217=param(60,min=0),
+                            A_cib_143=param(10,min=0),
+                            A_cib_217=param(40,min=0),
+                            A_sz=param(5,scale=1,range=(0,20)),
+                            r_ps=param(0.7,range=(0,1)),
+                            r_cib=param(0.7,range=(0,1)),
+                            n_Dl_cib=param(0.8,scale=0.2,gaussian_prior=(0.8,0.2)),
+                            cal_100=param(1,scale=0.001),
+                            cal_217=param(1,scale=0.001),
+                            xi_sz_cib=param(0.5,range=(-1,1),scale=0.2),
+                            A_ksz=param(1,range=(0,5)),
+                            Bm_1_1=param(0,gaussian_prior=(0,1),scale=1)
+                        )
+        else:
+            raise ValueError(highl)
 
         if lslice.start==2:
             if sim:
                 self.lowl=lowl(
-                   mask_file="../commander_dx11d2_mask_temp_n0016_likelihood_v1.fits",
+                   mask_file="commander_dx11d2_mask_temp_n0016_likelihood_v1.fits",
                    fidcl=fidcl
                 )
             else:
-                class clikwrap(clik):
-                    def __call__(self,cl):
-                        return super(clikwrap,self).__call__({'cl_TT':cl*arange(cl.size)*(arange(cl.size)+1)/2/pi})
-
-                self.lowl=clikwrap(clik_file='../commander_rc2_v1.1_l2_29_B.clik')
+                self.lowl=clikwrap(clik_file='commander_rc2_v1.1_l2_29_B.clik')
         else:
             assert lslice.start>=30, "can't slice lowl likelihood"
             self.lowl=None
@@ -151,14 +176,14 @@ class planck(SlikPlugin):
                                 self,
                                 num_samples=1e6,
                                 print_level=2,
-                                output_file='results/test_chain_%i_%i.chain'%(lslice.start,lslice.stop),
+                                output_file='shared/results/test_chain_%i_%i.chain'%(lslice.start,lslice.stop),
                                 proposal_cov=cov,
                            )
         
 
     def __call__(self):
         self.cosmo.As = exp(self.cosmo.logA)*1e-10
-        self.highl.calPlanck = self.calPlanck
+        self.highl.A_Planck = self.highl.calPlanck = self.calPlanck
         if self.lowl: self.lowl.A_planck = self.calPlanck
 
         self.clTT = self.get_cmb(ns=self.cosmo.ns,
@@ -195,10 +220,15 @@ class Minimizer(SlikSampler):
 
     def sample(self,lnl):
 
+        nfev=[0]
         def f(x,**kwargs):
             y = dot(self.G,x)
             l = lnl(*y,**kwargs)[0]
             if '--debug' in sys.argv: mspec_log(str((l,zip(self.sampled,y))))
+            if '--progress' in sys.argv:
+                nfev[0]+=1
+                with open('shared/progress','a') as f: 
+                    f.write('%.3f\n'%(0.001+nfev[0]/float(getargs('progress'))))
             return l
                     
         x0=dot(inv(self.G),self.x0)+self.initial_scatter*normal(size=len(self.x0))
@@ -210,18 +240,33 @@ class Minimizer(SlikSampler):
 
 if __name__=='__main__':
 
+
+    class NoDefault: pass
+    def getargs(key,default=NoDefault,n=1):
+        key = '--%s'%key
+        if key in sys.argv:
+            if n==1: return sys.argv[sys.argv.index(key)+1]
+            else: return sys.argv[sys.argv.index(key)+1:sys.argv.index(key)+1+n]
+        else:
+            if default is NoDefault: raise KeyError(key)
+            else: return default
+
+
+
+    highl = getargs('highl','custom')
+
+
     if '--chain' in sys.argv:
 
-        p=Slik(planck(lslice=slice(int(sys.argv[2]),int(sys.argv[3])),sim=False,action='chain'))
+        lslice = slice(*map(int,getargs('lslice',n=2)))
+        p=Slik(planck(lslice=lslice,sim=False,action='chain',highl=highl))
         for _ in p.sample(): pass
 
     else:
 
-        tocl=2*pi/arange(2,2509)/(arange(2,2509)+1)
-        fidcl=hstack([zeros(2),loadtxt("../base_plikHM_TT_tau07.minimum.theory_cl")[:,1]*tocl])
-
-        def do_run(lslice, sim=False):
-            mspec_log('Doing: %s %s'%(lslice,'sim(%s)'%sys.argv[1] if sim else ''))
+        def do_run(lslice, sim=False, seed=None):
+            mspec_log('Doing: %s %s'%(lslice,'sim(%s)'%seed if seed else ''))
+            random.seed(seed)
             s = Slik(planck(lslice=slice(*lslice),sim=sim))
             bf,x0,res = s.sample().next()
 
@@ -231,46 +276,47 @@ if __name__=='__main__':
             pp = dict(zip(s.get_sampled(),bf))
             pp.update({'cosmo.theta':100*p.get_cmb.result.cosmomc_theta(),
                        'cosmo.ommh2':pp['cosmo.omch2']+pp['cosmo.ombh2'],
-                       # 'cosmo.sigma8':p.get_cmb.result.get_sigma8()[0],
+                       'cosmo.sigma8':p.get_cmb.result.get_sigma8()[0],
                        'cosmo.clamp':exp(pp['cosmo.logA'])*exp(-2*pp['cosmo.tau'])/10,
                        'lnl':lnl,
                        'highl_chi2':2*p.highl(p.clTT),
                        'highl_dof':p.highl.bslice.stop - p.highl.bslice.start,
                        'clTT':p.clTT,
                        'res':res,
-                       'x0':x0})
-            # pp['cosmo.s8omm1/4']=pp['cosmo.sigma8']*(pp['cosmo.ommh2']/(pp['cosmo.H0']/100.)**2)**0.25
+                       'x0':x0,
+                       'seed':seed})
+            pp['cosmo.s8omm1/4']=pp['cosmo.sigma8']*(pp['cosmo.ommh2']/(pp['cosmo.H0']/100.)**2)**0.25
 
             mspec_log('Got: %s'%str((lslice,pp)))
 
-            return (lslice,pp)
+            #save result to file
+            result_dir = osp.join('shared/results',('sim_%s'%seed) if sim else 'real')
+            os.makedirs(result_dir)
+            pickle.dump([((seed,lslice),pp)],
+                        open(osp.join(result_dir,'lslice_%i_%i'%lslice),'w'),protocol=2)
+
+            return ((seed,lslice),pp)
+
+
+        lslices = eval(getargs('lslices',"[]"))
+        if lslices == []:
+            for lsplit in range(100,2500,50)+[2509]:
+                if lsplit<1700: lslices.append((lsplit,2509))
+                for lmin in (2,30):
+                    if lsplit>=650: lslices.append((lmin,lsplit))
+
+
+        mspec_log('Doing lslices (%i): %s'%(len(lslices),lslices),rootlog=True)
 
 
         if '--real' in sys.argv:
 
-            work = []
-            for lsplit in range(100,2500,50)+[2510]:
-                if lsplit<1700: work.append((lsplit,2510))
-                for lmin in (2,30):
-                    if lsplit>=650: work.append((lmin,lsplit))
-            mspec_log('All work (%i): %s'%(len(work),work),rootlog=True)
-
-            cl = 'cl_cmb_plik_bin1_v18.dat'
-            results = {}
-                    
-
-            results = mpi_map(do_run,work)
-            pickle.dump(results,open('results/result_real','w'),protocol=2)
-
+            results = mpi_map(do_run,lslices)
 
         else:
 
-            highl = plik_lite_binned(
-                clik_folder='../plik_lite_v18_TT.clik',
-                lslice=slice(30,2509)
-            )
+            seeds = eval(getargs('seeds'))
 
-            random.seed(int(sys.argv[1]))
-
-            r = do_run((int(sys.argv[2]),int(sys.argv[3])),sim=True)
-            pickle.dump(r,open('results/result_sim_%i_%i_%i'%(map(int,sys.argv[1:])),'w'),protocol=2)
+            for seed in seeds:
+                for lslice in lslices:
+                    do_run(lslice,sim=True,seed=seed)

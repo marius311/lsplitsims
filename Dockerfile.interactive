@@ -1,0 +1,15 @@
+FROM lsplitsims
+
+# needed for interactive work:
+RUN apt-get update \
+    && apt-get install -y \ 
+        python-pip \
+        python-matplotlib \
+    && pip install jupyter pypico
+EXPOSE 8888
+
+# needed for cori
+RUN apt-get update \
+    && apt-get install -y \
+        python-mpi4py \
+        ssh
