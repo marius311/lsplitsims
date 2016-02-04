@@ -15,6 +15,7 @@ from scipy import stats
 import gc
 from mspec import mpi_map, get_bin_func, mspec_log
 from cosmoslik_plugins.likelihoods.clik import clik
+import argparse
 
 param = param_shortcut('start','scale')
 
@@ -224,16 +225,19 @@ class Minimizer(SlikSampler):
         def f(x,**kwargs):
             y = dot(self.G,x)
             l = lnl(*y,**kwargs)[0]
-            if '--debug' in sys.argv: mspec_log(str((l,zip(self.sampled,y))))
-            if '--progress' in sys.argv:
+            if args.debug: mspec_log(str((l,zip(self.sampled,y))))
+            if args.progress:
                 nfev[0]+=1
                 with open('shared/progress','a') as f: 
-                    f.write('%.3f\n'%(0.001+nfev[0]/float(getargs('progress'))))
+                    f.write('%.3f\n'%(0.001+nfev[0]/args.progress))
             return l
                     
         x0=dot(inv(self.G),self.x0)+self.initial_scatter*normal(size=len(self.x0))
-        res = minimize(f,x0,method='Powell',options=dict(xtol=1e-4,ftol=1e-4,disp=False))
-        yield dot(self.G,res.x), dot(self.G,x0), res
+        if args.dryrun:
+            yield dot(self.G,x0), dot(self.G,x0), None
+        else:
+            res = minimize(f,x0,method='Powell',options=dict(xtol=1e-4,ftol=1e-4,disp=False))
+            yield dot(self.G,res.x), dot(self.G,x0), res
 
 
 
@@ -241,31 +245,28 @@ class Minimizer(SlikSampler):
 if __name__=='__main__':
 
 
-    class NoDefault: pass
-    def getargs(key,default=NoDefault,n=1):
-        key = '--%s'%key
-        if key in sys.argv:
-            if n==1: return sys.argv[sys.argv.index(key)+1]
-            else: return sys.argv[sys.argv.index(key)+1:sys.argv.index(key)+1+n]
-        else:
-            if default is NoDefault: raise KeyError(key)
-            else: return default
+    parser = argparse.ArgumentParser(prog='run_sim')
+    parser.add_argument('--highl', default='custom', help='[custom|plik_like|plik]')
+    parser.add_argument('--lslices', help='e.g. [(2,800),(2,2500)]')
+    parser.add_argument('--seeds', help='e.g. range(10)')
+    parser.add_argument('--progress', metavar='MAXSTEPS', type=float, help='write progress to file')
+    parser.add_argument('--real',action='store_true', help='do real data')
+    parser.add_argument('--chain', action='store_true',help='run chain')
+    parser.add_argument('--dryrun', action='store_true',help='only do one step of minimizer')
+    parser.add_argument('--debug', action='store_true',help='print debug output')
+    args = parser.parse_args()
 
 
+    if args.chain:
 
-    highl = getargs('highl','custom')
-
-
-    if '--chain' in sys.argv:
-
-        lslice = slice(*map(int,getargs('lslice',n=2)))
-        p=Slik(planck(lslice=lslice,sim=False,action='chain',highl=highl))
+        assert args.lslices is not None and len(eval(args.lslices))==1, "for chain must provide one single lslice"
+        p=Slik(planck(lslice=slice(*eval(args.lslices)[0]),sim=False,action='chain',highl=args.highl))
         for _ in p.sample(): pass
 
     else:
 
         def do_run(lslice, sim=False, seed=None):
-            mspec_log('Doing: %s %s'%(lslice,'sim(%s)'%seed if seed else ''))
+            mspec_log('Doing: %s %s'%(lslice,'sim(%s)'%seed if seed is not None else ''))
             random.seed(seed)
             s = Slik(planck(lslice=slice(*lslice),sim=sim))
             bf,x0,res = s.sample().next()
@@ -291,32 +292,33 @@ if __name__=='__main__':
 
             #save result to file
             result_dir = osp.join('shared/results',('sim_%s'%seed) if sim else 'real')
-            os.makedirs(result_dir)
+            if not osp.exists(result_dir): os.makedirs(result_dir)
             pickle.dump([((seed,lslice),pp)],
                         open(osp.join(result_dir,'lslice_%i_%i'%lslice),'w'),protocol=2)
 
             return ((seed,lslice),pp)
 
 
-        lslices = eval(getargs('lslices',"[]"))
-        if lslices == []:
+
+        if args.lslices is None:
             for lsplit in range(100,2500,50)+[2509]:
                 if lsplit<1700: lslices.append((lsplit,2509))
                 for lmin in (2,30):
                     if lsplit>=650: lslices.append((lmin,lsplit))
-
+        else:
+            lslices = eval(args.lslices)
 
         mspec_log('Doing lslices (%i): %s'%(len(lslices),lslices),rootlog=True)
 
 
-        if '--real' in sys.argv:
+        if args.real:
 
             results = mpi_map(do_run,lslices)
 
         else:
 
-            seeds = eval(getargs('seeds'))
+            assert args.seeds is not None, "must provide seeds"
 
-            for seed in seeds:
+            for seed in eval(args.seeds):
                 for lslice in lslices:
                     do_run(lslice,sim=True,seed=seed)
