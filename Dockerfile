@@ -47,6 +47,7 @@ ENV PYTHONPATH=/root/mspec:/root/cosmoslik:$PYTHONPATH
 # install camb
 RUN mkdir camb \
     && curl -L https://github.com/cmbant/camb/tarball/a28e487         | tar zxf - -C camb      --strip-components=1 \
+    && sed -i '/march=native/d' camb/Makefile \
     && cd camb/pycamb \
     && python setup.py install
 
