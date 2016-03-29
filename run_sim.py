@@ -16,6 +16,8 @@ import gc
 from mspec import mpi_map, get_bin_func, mspec_log
 from cosmoslik_plugins.likelihoods.clik import clik
 import argparse
+from random import randint
+import pyfits
 
 param = param_shortcut('start','scale')
 
@@ -76,38 +78,41 @@ class plik_lite_binned(SlikPlugin):
         
 
 
-class lowl(SlikPlugin):
+class lowl_approx(SlikPlugin):
     """
     A full-sky fsky scaled analytic likelihood.
-    The observed Cls are generated randomly each time this is initialized. 
+    The observed Cls can be generated randomly based on a fiducial Cl, 
+    or a map can be provided. 
     """
 
-    def __init__(self,mask_file,fidcl):
+    def __init__(self,mask_file,f,maps=None,bl=None,fidcl=None):
 
-        self.mask = H.read_map(mask_file)
-        self.fsky = self.mask.sum()/self.mask.size
+        mask = H.read_map(mask_file)
+
+        self.fsky = mask.sum()/mask.size
+        self.f = ones(30) if f is None else f
 
         qk=quickkern(200)
-        imll=inv(qk.get_mll(H.anafast(self.mask,lmax=60))[:60,:60])
+        imll=inv(qk.get_mll(H.anafast(mask,lmax=60))[:49,:49])
 
-        self.clobs = dot(imll,H.anafast(self.mask*H.synfast(fidcl,16,new=True,verbose=False),lmax=59))
+        if maps is None:
+            mp1=mp2=H.synfast(fidcl,16,new=True,verbose=False)
+            bl=ones(50)
+        else:
+            mp1,mp2=(H.ud_grade(H.read_map(m),16)*1e6 for m in maps)
+
+        self.clobs = dot(imll,H.anafast(mask*mp1,mask*mp2,lmax=48))/bl[:49]**2
+        self.chi2s = [stats.chi2((2*l+1)*self.fsky*self.f[l]) for l in range(30)]
 
     def __call__(self,cl):
-
-        @vectorize
-        def cllike(l):
-            f=(2*l+1)/cl[l]/self.fsky
-            return stats.chi2((2*l+1)).pdf(f*self.clobs[l])*f
-
-        return -log(cllike(arange(2,30))).sum()
-
+        return -log([self.chi2s[l].pdf((2*l+1)*self.fsky*self.f[l]*self.clobs[l]*self.A_planck**2/cl[l]) for l in range(2,30)]).sum()
    
 
 class planck(SlikPlugin):
 
     def __init__(self, lslice=slice(2,2509), sim=False, model='lcdm', 
                  action='minimize', cov='planck_2_2500.covmat',
-                 highl='custom'):
+                 tau=None, highl='custom',lowl='comm'):
 
         super(planck,self).__init__(**all_kw(locals()))
 
@@ -116,7 +121,7 @@ class planck(SlikPlugin):
             ns = param(0.962,0.006),
             ombh2 = param(0.02221,0.0002),
             omch2 = param(0.1203,0.002),
-            tau = param(0.085,0.01,min=0,gaussian_prior=(0.07,0.02)),
+            tau = param(0.085,0.01,min=0,gaussian_prior=(0.07,0.02)) if tau is None else tau,
             H0 = param(67,1),
             pivot_scalar=0.05,
             mnu = 0.06,
@@ -158,12 +163,27 @@ class planck(SlikPlugin):
 
         if lslice.start==2:
             if sim:
-                self.lowl=lowl(
+                assert lowl!='comm'
+                self.lowl=lowl_approx(
                    mask_file="commander_dx11d2_mask_temp_n0016_likelihood_v1.fits",
+                   f=loadtxt("commander_dx11d2_mask_temp_n0016_likelihood_v1_f.dat") if lowl=='fl' else None,
                    fidcl=fidcl
                 )
             else:
-                self.lowl=clikwrap(clik_file='commander_rc2_v1.1_l2_29_B.clik')
+                if lowl=='comm':
+                    self.lowl=clikwrap(clik_file='commander_rc2_v1.1_l2_29_B.clik')
+                elif lowl in ['fl','fsky']:
+                    self.lowl=lowl_approx(
+                       mask_file="commander_dx11d2_mask_temp_n0016_likelihood_v1.fits",
+                       maps=("COM_CMB_IQU-commander_1024_R2.02_halfmission-1.fits",
+                             "COM_CMB_IQU-commander_1024_R2.02_halfmission-2.fits"),
+                       bl=pyfits.open("COM_CMB_IQU-commander_1024_R2.02_full.fits")[2].data['INT_BEAM'],
+                       f=loadtxt("commander_dx11d2_mask_temp_n0016_likelihood_v1_f.dat") if lowl=='fl' else None,
+                       fidcl=fidcl
+                    )
+                else:
+                    raise ValueError(lowl)
+
         else:
             assert lslice.start>=30, "can't slice lowl likelihood"
             self.lowl=None
@@ -247,14 +267,21 @@ if __name__=='__main__':
 
     parser = argparse.ArgumentParser(prog='run_sim')
     parser.add_argument('--highl', default='custom', help='[custom|plik_like|plik]')
+    parser.add_argument('--lowl', default='custom', help='[comm|fsky|fl]')
+    parser.add_argument('--tau', type=float, help='fix tau to this')
     parser.add_argument('--lslices', help='e.g. [(2,800),(2,2500)]')
     parser.add_argument('--seeds', help='e.g. range(10)')
     parser.add_argument('--progress', metavar='MAXSTEPS', type=float, help='write progress to file')
     parser.add_argument('--real',action='store_true', help='do real data')
+    parser.add_argument('--fid', help='fiducial Cls')
     parser.add_argument('--chain', action='store_true',help='run chain')
     parser.add_argument('--dryrun', action='store_true',help='only do one step of minimizer')
     parser.add_argument('--debug', action='store_true',help='print debug output')
     args = parser.parse_args()
+
+
+    if args.fid: 
+        fidcl = loadtxt(args.fid)
 
 
     if args.chain:
@@ -268,16 +295,17 @@ if __name__=='__main__':
         def do_run(lslice, sim=False, seed=None):
             mspec_log('Doing: %s %s'%(lslice,'sim(%s)'%seed if seed is not None else ''))
             random.seed(seed)
-            s = Slik(planck(lslice=slice(*lslice),sim=sim))
+            s = Slik(planck(lslice=slice(*lslice),sim=sim,lowl=args.lowl,highl=args.highl,tau=args.tau))
             bf,x0,res = s.sample().next()
 
             #postprocessing
             s.params.cambargs = {'redshifts':[0]}
             lnl,p = s.evaluate(*bf)
             pp = dict(zip(s.get_sampled(),bf))
+            pp['cosmo.tau'] = p.cosmo.tau
             pp.update({'cosmo.theta':100*p.get_cmb.result.cosmomc_theta(),
                        'cosmo.ommh2':pp['cosmo.omch2']+pp['cosmo.ombh2'],
-                       'cosmo.sigma8':p.get_cmb.result.get_sigma8()[0],
+                       # 'cosmo.sigma8':p.get_cmb.result.get_sigma8()[0],
                        'cosmo.clamp':exp(pp['cosmo.logA'])*exp(-2*pp['cosmo.tau'])/10,
                        'lnl':lnl,
                        'highl_chi2':2*p.highl(p.clTT),
@@ -286,12 +314,14 @@ if __name__=='__main__':
                        'res':res,
                        'x0':x0,
                        'seed':seed})
-            pp['cosmo.s8omm1/4']=pp['cosmo.sigma8']*(pp['cosmo.ommh2']/(pp['cosmo.H0']/100.)**2)**0.25
+            # pp['cosmo.s8omm1/4']=pp['cosmo.sigma8']*(pp['cosmo.ommh2']/(pp['cosmo.H0']/100.)**2)**0.25
 
             mspec_log('Got: %s'%str((lslice,pp)))
 
             #save result to file
-            result_dir = osp.join('shared/results',('sim_%s'%seed) if sim else 'real')
+            result_dir = osp.join('shared/results','sims' if sim else 'real',
+                                  args.highl,args.lowl,'tau_%.2f'%args.tau if args.tau else 'tau_free',
+                                  ('sim_%s'%seed) if sim else 'real')
             if not osp.exists(result_dir): os.makedirs(result_dir)
             pickle.dump([((seed,lslice),pp)],
                         open(osp.join(result_dir,'lslice_%i_%i'%lslice),'w'),protocol=2)
@@ -319,6 +349,5 @@ if __name__=='__main__':
 
             assert args.seeds is not None, "must provide seeds"
 
-            for seed in eval(args.seeds):
-                for lslice in lslices:
-                    do_run(lslice,sim=True,seed=seed)
+            mpi_map(lambda seed: [do_run(lslice,sim=True,seed=seed) for lslice in lslices], eval(args.seeds))
+                    
