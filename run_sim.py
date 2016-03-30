@@ -5,7 +5,7 @@ from numpy import *
 import struct
 from scipy.linalg import cho_solve, cholesky
 import os, os.path as osp
-from numpy.linalg import inv
+from numpy.linalg import inv, norm
 from numpy.random import normal
 from scipy.optimize import fmin, minimize
 import cPickle as pickle
@@ -18,6 +18,8 @@ from cosmoslik_plugins.likelihoods.clik import clik
 import argparse
 from random import randint
 import pyfits
+from glob import glob
+import re
 
 param = param_shortcut('start','scale')
 
@@ -111,8 +113,7 @@ class lowl_approx(SlikPlugin):
 class planck(SlikPlugin):
 
     def __init__(self, lslice=slice(2,2509), sim=False, model='lcdm', 
-                 action='minimize', cov='planck_2_2500.covmat',
-                 tau=None, highl='custom',lowl='comm'):
+                 action='minimize',tau=None, highl='custom',lowl='comm'):
 
         super(planck,self).__init__(**all_kw(locals()))
 
@@ -190,6 +191,10 @@ class planck(SlikPlugin):
         
 
         self.priors = get_plugin('likelihoods.priors')(self)
+
+        #pick available covariance file closest to current lslice
+        cov = sorted([(norm(array(map(int,re.search('([0-9]+)_([0-9]+)',f).groups()))-[lslice.start,lslice.stop]),f) for f in glob('covs/*')])[0][1]
+
         if action=='minimize':
             self.sampler = Minimizer(self,whiten_cov=cov)
         else:
