@@ -87,9 +87,9 @@ class lowl_approx(SlikPlugin):
     or a map can be provided. 
     """
 
-    def __init__(self,mask_file,f,maps=None,bl=None,fidcl=None):
+    def __init__(self,mask_file=None,f=None,maps=None,bl=None,fidcl=None):
 
-        mask = H.read_map(mask_file)
+        mask = ones(12*16**2) if mask_file is None else H.read_map(mask_file) 
 
         self.fsky = mask.sum()/mask.size
         self.f = ones(30) if f is None else f
@@ -103,7 +103,7 @@ class lowl_approx(SlikPlugin):
         else:
             mp1,mp2=(H.ud_grade(H.read_map(m),16)*1e6 for m in maps)
 
-        self.clobs = dot(imll,H.anafast(mask*mp1,mask*mp2,lmax=48))/bl[:49]**2
+        self.clobs = dot(imll,H.anafast(mask*mp1,mask*mp2,lmax=48))/(bl[:49]**2 if maps else 1)
         self.chi2s = [stats.chi2((2*l+1)*self.fsky*self.f[l]) for l in range(30)]
 
     def __call__(self,cl):
@@ -166,7 +166,7 @@ class planck(SlikPlugin):
             if sim:
                 assert lowl!='comm'
                 self.lowl=lowl_approx(
-                   mask_file="commander_dx11d2_mask_temp_n0016_likelihood_v1.fits",
+                   mask_file=None if args.lowlfullsky else "commander_dx11d2_mask_temp_n0016_likelihood_v1.fits",
                    f=loadtxt("commander_dx11d2_mask_temp_n0016_likelihood_v1_f.dat") if lowl=='fl' else None,
                    fidcl=fidcl
                 )
@@ -281,6 +281,7 @@ if __name__=='__main__':
     parser.add_argument('--fid', help='fiducial Cls')
     parser.add_argument('--chain', action='store_true',help='run chain')
     parser.add_argument('--dryrun', action='store_true',help='only do one step of minimizer')
+    parser.add_argument('--lowlfullsky', action='store_true',help='dont apply mask at lowl')
     parser.add_argument('--debug', action='store_true',help='print debug output')
     args = parser.parse_args()
 
