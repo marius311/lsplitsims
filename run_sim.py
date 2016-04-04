@@ -103,11 +103,11 @@ class lowl_approx(SlikPlugin):
         else:
             mp1,mp2=(H.ud_grade(H.read_map(m),16)*1e6 for m in maps)
 
-        self.clobs = dot(imll,H.anafast(mask*mp1,mask*mp2,lmax=48))/(bl[:49]**2 if maps else 1)
+        self.clobs = dot(imll,H.anafast(mask*mp1,mask*mp2,lmax=48))/bl[:49]**2
         self.chi2s = [stats.chi2((2*l+1)*self.fsky*self.f[l]) for l in range(30)]
 
     def __call__(self,cl):
-        return -log([self.chi2s[l].pdf((2*l+1)*self.fsky*self.f[l]*self.clobs[l]*self.A_planck**2/cl[l]) for l in range(2,30)]).sum()
+        return -log([self.chi2s[l].pdf((2*l+1)*self.fsky*self.f[l]*self.clobs[l]*self.A_planck**2/cl[l])/cl[l] for l in range(2,30)]).sum()
    
 
 class planck(SlikPlugin):
