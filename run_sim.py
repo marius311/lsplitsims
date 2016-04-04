@@ -278,7 +278,7 @@ if __name__=='__main__':
     parser.add_argument('--seeds', help='e.g. range(10)')
     parser.add_argument('--progress', metavar='MAXSTEPS', type=float, help='write progress to file')
     parser.add_argument('--real',action='store_true', help='do real data')
-    parser.add_argument('--fid', help='fiducial Cls')
+    parser.add_argument('--fid', default='fid_tau0.07.txt',help='fiducial Cls')
     parser.add_argument('--chain', action='store_true',help='run chain')
     parser.add_argument('--dryrun', action='store_true',help='only do one step of minimizer')
     parser.add_argument('--lowlfullsky', action='store_true',help='dont apply mask at lowl')
