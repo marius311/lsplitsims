@@ -272,7 +272,7 @@ if __name__=='__main__':
 
     parser = argparse.ArgumentParser(prog='run_sim')
     parser.add_argument('--highl', default='custom', help='[custom|plik_like|plik]')
-    parser.add_argument('--lowl', default='custom', help='[comm|fsky|fl]')
+    parser.add_argument('--lowl', default='fl', help='[comm|fsky|fl]')
     parser.add_argument('--tau', type=float, help='fix tau to this')
     parser.add_argument('--lslices', help='e.g. [(2,800),(2,2500)]')
     parser.add_argument('--seeds', help='e.g. range(10)')
@@ -337,6 +337,7 @@ if __name__=='__main__':
 
 
         if args.lslices is None:
+            lslices = []
             for lsplit in range(100,2500,50)+[2509]:
                 if lsplit<1700: lslices.append((lsplit,2509))
                 for lmin in (2,30):

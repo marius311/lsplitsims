@@ -65,8 +65,10 @@ ADD commander_rc2_v1.1_l2_29_B.clik.tgz \
     base_plikHM_TT_tau07.minimum.theory_cl \
     planck_2_2500.covmat \
     commander_dx11d2_mask_temp_n0016_likelihood_v1.fits \
+    commander_dx11d2_mask_temp_n0016_likelihood_v1_f.dat \
     run_sim.py \
     /root/
+COPY covs /root/covs
 RUN mkdir -p /root/shared/results
 ENV PYTHONPATH=/root:$PYTHONPATH
 
@@ -74,7 +76,3 @@ ENV PYTHONPATH=/root:$PYTHONPATH
 WORKDIR /root
 
 ENTRYPOINT ["python","run_sim.py"]
-
-# CMD ["python","run_sim.py"]
-
-# CMD jupyter-notebook --ip=* --no-browser
