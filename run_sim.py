@@ -117,6 +117,7 @@ class planck(SlikPlugin):
 
         super(planck,self).__init__(**all_kw(locals()))
 
+        assert model in ['lcdm','lcdmalens']
         self.cosmo = get_plugin('models.cosmology')(
             logA = param(3.108,0.03),
             ns = param(0.962,0.006),
@@ -124,6 +125,7 @@ class planck(SlikPlugin):
             omch2 = param(0.1203,0.002),
             tau = param(0.085,0.01,min=0,gaussian_prior=(0.07,0.02)) if tau is None else tau,
             H0 = param(67,1),
+            ALens = param(1,0.2) if 'alens' in args.model else 1,
             pivot_scalar=0.05,
             mnu = 0.06,
         )
@@ -193,7 +195,7 @@ class planck(SlikPlugin):
         self.priors = get_plugin('likelihoods.priors')(self)
 
         #pick available covariance file closest to current lslice
-        cov = sorted([(norm(array(map(int,re.search('([0-9]+)_([0-9]+)',f).groups()))-[lslice.start,lslice.stop]),f) for f in glob('covs/*')])[0][1]
+        cov = sorted([(norm(array(map(int,re.search('([0-9]+)_([0-9]+)',f).groups()))-[lslice.start,lslice.stop]),f) for f in glob('covs/%s/*'%args.model)])[0][1]
 
         if action=='minimize':
             self.sampler = Minimizer(self,whiten_cov=cov)
@@ -218,6 +220,7 @@ class planck(SlikPlugin):
                                  omch2=self.cosmo.omch2,
                                  H0=self.cosmo.H0,
                                  tau=self.cosmo.tau,
+                                 ALens=self.cosmo.ALens,
                                  lmax=3000,
                                  **self.get('cambargs',{}))['cl_TT'][:2510]
         self.clTT[2:] *= (2*pi/arange(2,2510)/(arange(2,2510)+1))
@@ -283,6 +286,7 @@ if __name__=='__main__':
     parser.add_argument('--dryrun', action='store_true',help='only do one step of minimizer')
     parser.add_argument('--lowlfullsky', action='store_true',help='dont apply mask at lowl')
     parser.add_argument('--debug', action='store_true',help='print debug output')
+    parser.add_argument('--model', default='lcdm',help='[lcdm|lcdmalens]')
     args = parser.parse_args()
 
 
@@ -325,7 +329,7 @@ if __name__=='__main__':
             mspec_log('Got: %s'%str((lslice,pp)))
 
             #save result to file
-            result_dir = osp.join('shared/results','sims' if sim else 'real',
+            result_dir = osp.join('shared/results','sims' if sim else 'real',args.model,
                                   args.highl,args.lowl,'tau_%.2f'%args.tau if args.tau else 'tau_free',
                                   ('sim_%s'%seed) if sim else 'real')
             if not osp.exists(result_dir): os.makedirs(result_dir)
