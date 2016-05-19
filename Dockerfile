@@ -1,4 +1,4 @@
-FROM debian:jessie 
+FROM debian:jessie
 
 RUN apt-get update \
     && apt-get install -y \
@@ -34,19 +34,19 @@ ENV PYTHONPATH=/root/healpy-1.9.1
 
 #install quickbeam (for kernel computation)
 RUN mkdir quickbeam \
-    && curl -L https://github.com/marius311/quickbeam/tarball/0f61a97 | tar zxf - -C quickbeam --strip-components=1 \
+    && curl -L https://github.com/marius311/quickbeam/tarball/0f61a97 | tar zxf - -C quickbeam --strip=1 \
     && cd quickbeam \
     && python setup.py install
 
 # install cosmoslik/mspec
 RUN mkdir cosmoslik mspec \
-    && curl -L https://github.com/marius311/cosmoslik/tarball/cd23e4a | tar zxf - -C cosmoslik --strip-components=1 \
-    && curl -L https://github.com/marius311/mspec/tarball/ea533f5     | tar zxf - -C mspec     --strip-components=1
+    && curl -L https://github.com/marius311/cosmoslik/tarball/cd23e4a | tar zxf - -C cosmoslik --strip=1 \
+    && curl -L https://github.com/marius311/mspec/tarball/ea533f5     | tar zxf - -C mspec     --strip=1
 ENV PYTHONPATH=/root/mspec:/root/cosmoslik:$PYTHONPATH
 
 # install camb
 RUN mkdir camb \
-    && curl -L https://github.com/cmbant/camb/tarball/a28e487         | tar zxf - -C camb      --strip-components=1 \
+    && curl -L https://github.com/marius311/camb/tarball/b9ef5c4      | tar zxf - -C camb      --strip=1 \
     && sed -i '/march=native/d' camb/Makefile \
     && cd camb/pycamb \
     && python setup.py install
@@ -67,6 +67,7 @@ ADD commander_rc2_v1.1_l2_29_B.clik.tgz \
     commander_dx11d2_mask_temp_n0016_likelihood_v1.fits \
     commander_dx11d2_mask_temp_n0016_likelihood_v1_f.dat \
     fid_tau0.07.txt \
+    fid_tau0.055.txt \
     run_sim.py \
     /root/
 COPY covs /root/covs
