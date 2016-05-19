@@ -63,7 +63,6 @@ ENV PYTHONPATH=/root/plc-2.0/lib/python2.7/site-packages:$PYTHONPATH
 ADD commander_rc2_v1.1_l2_29_B.clik.tgz \
     plik_lite_v18_TT.clik.tgz \
     base_plikHM_TT_tau07.minimum.theory_cl \
-    planck_2_2500.covmat \
     commander_dx11d2_mask_temp_n0016_likelihood_v1.fits \
     commander_dx11d2_mask_temp_n0016_likelihood_v1_f.dat \
     fid_tau0.07.txt \
