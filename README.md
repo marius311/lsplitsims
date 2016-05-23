@@ -1,10 +1,11 @@
-To build Dockerfile and run:
+This is the code for the `planck_param_sims` application at [Cosmology@Home](http://www.cosmologyathome.org). To build the Docker container:
 
-    docker build -t run_sim .
-    docker run --rm -it run_sim [--real]
+    make build
 
-To reduce file size (only needed e.g. for Cosmology@Home):
+You can then run it with,
 
-    docker save run_sim | sudo docker-squash -from bf84c1d84a8f -t run_sim_reallysmall | docker load
+    docker run lsplitsims
 
-See also https://github.com/jwilder/docker-squash
+To reduce file size (likely only needed if you're actually going to run it at Cosmology@Home), you need [docker-stfd](https://github.com/marius311/stfd) installed and run:
+
+    make squash
