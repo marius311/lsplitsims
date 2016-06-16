@@ -113,7 +113,7 @@ class lowl_approx(SlikPlugin):
 class planck(SlikPlugin):
 
     def __init__(self, tau, output_file=None, lslice=slice(2,2509), sim=False, model='lcdm',
-                 action='minimize', highl='custom', lowl='comm', derived=False, derived_cls=None):
+                 action='minimize', highl='custom', lowl='comm', simlow=False, derived=False, derived_cls=None):
 
         super(planck,self).__init__(**all_kw(locals()))
 
@@ -124,11 +124,20 @@ class planck(SlikPlugin):
             ombh2 = param(0.02221,0.0002),
             omch2 = param(0.1203,0.002),
             H0 = param(67,1),
-            tau = param(tau[0],0.01,min=0,gaussian_prior=tau) if isinstance(tau,tuple) else tau,
             ALens = param(1,0.2) if 'alens' in args.model else 1,
             pivot_scalar=0.05,
             mnu = 0.06,
         )
+        
+        if simlow:
+            self.cosmo.tau = param(0.07,0.01,min=0)
+            self.simlow = clik(clik_file='simlow_MA_EE_2_32_2016_03_31.clik',auto_reject_errors=True)
+        else:
+            if isinstance(tau,tuple):
+                self.cosmo.tau = param(tau[0],0.01,min=0,gaussian_prior=tau) 
+            else:
+                self.cosmo.tau = tau
+            self.simlow = None
 
         self.get_cmb = get_plugin('models.camb')()
         self.get_cmb._camb.ignore_fatal_errors.value = True
@@ -242,13 +251,15 @@ class planck(SlikPlugin):
         p = {k:self.cosmo[k] for k in ['ns','As','ombh2','omch2','H0','tau','ALens']}
         p.update(self.get('cambargs',{}))
         p['lmax']=3000
-        self.clTT = self.get_cmb(**p)['cl_TT'][:2510]
+        cmb = self.get_cmb(**p)
+        self.clTT = cmb['cl_TT'][:2510]
         self.clTT[2:] *= (2*pi/arange(2,2510)/(arange(2,2510)+1))
         if self.derived: self.add_derived()
 
         return lsum(lambda: self.priors(self),
                     lambda: self.highl(self.clTT),
-                    lambda: self.lowl(self.clTT) if self.lowl else 0)
+                    lambda: self.lowl(self.clTT) if self.lowl else 0,
+                    lambda: self.simlow(cmb) if self.simlow else 0)
 
 
 class Minimizer(SlikSampler):
@@ -297,6 +308,7 @@ if __name__=='__main__':
     parser = argparse.ArgumentParser(prog='run_sim')
     parser.add_argument('--highl', default='custom', help='[custom|plik_like|plik]')
     parser.add_argument('--lowl', default='fl', help='[comm|fsky|fl]')
+    parser.add_argument('--simlow', action='store_true', help='use simlow likelihod instead of tau prior')    
     parser.add_argument('--tau',  default="(0.07,0.02)", help='(mean,std) prior on tau, or just value to fix tau to')
     parser.add_argument('--lslices', help='e.g. [(2,800),(2,2500)]')
     parser.add_argument('--seeds', help='e.g. range(10)')
@@ -313,7 +325,7 @@ if __name__=='__main__':
     args = parser.parse_args()
 
     base_dir = osp.join(args.model,args.highl,args.lowl,
-                        'tau_'+'_'.join('%.3f'%x for x in atleast_1d(eval(args.tau))))
+                        'simlow' if args.simlow else ('tau_'+'_'.join('%.3f'%x for x in atleast_1d(eval(args.tau)))))
 
     if args.fid:
         fidcl = loadtxt(args.fid)
@@ -329,7 +341,7 @@ if __name__=='__main__':
         p=Slik(planck(lslice=slice(*lslice),
                       sim=False,action='chain',
                       tau=eval(args.tau),
-                      highl=args.highl,lowl=args.lowl,
+                      highl=args.highl,lowl=args.lowl,simlow=args.simlow,
                       derived=args.derived,
                       derived_cls=args.derived_cls.split(',') if args.derived_cls else None,
                       output_file=output_file))
@@ -353,7 +365,7 @@ if __name__=='__main__':
 
             #compute result
             random.seed(seed)
-            s = Slik(planck(lslice=slice(*lslice),sim=sim,lowl=args.lowl,highl=args.highl,tau=eval(args.tau)))
+            s = Slik(planck(lslice=slice(*lslice),sim=sim,lowl=args.lowl,highl=args.highl,simlow=args.simlow,tau=eval(args.tau)))
             bf,x0,res = s.sample().next()
 
             #postprocessing
