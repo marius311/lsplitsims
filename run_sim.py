@@ -117,17 +117,24 @@ class planck(SlikPlugin):
 
         super(planck,self).__init__(**all_kw(locals()))
 
-        assert model in ['lcdm','lcdmalens']
+        def fix(*params):
+            for p in params:
+                self.cosmo[p] = self.cosmo[p].start
+
+        assert model in ['lcdm','lcdmalens','Asns']
         self.cosmo = get_plugin('models.cosmology')(
             logA = param(3.108,0.03),
             ns = param(0.962,0.006),
             ombh2 = param(0.02221,0.0002),
             omch2 = param(0.1203,0.002),
             H0 = param(67,1),
-            ALens = param(1,0.2) if 'alens' in args.model else 1,
-            pivot_scalar=0.05,
-            mnu = 0.06,
+            ALens = param(1,0.2),
+            pivot_scalar = 0.05,
+            mnu = 0.06
         )
+        if 'alens' not in model: fix('ALens')
+        if model=='Asns': fix('ombh2','omch2','H0')
+        
         
         if simlow:
             self.cosmo.tau = param(0.07,0.01,min=0)
@@ -150,32 +157,36 @@ class planck(SlikPlugin):
             def __call__(self,cl):
                 return super(clikwrap,self).__call__({'cl_TT':cl*arange(cl.size)*(arange(cl.size)+1)/2/pi})
 
-        if highl=='custom':
-            self.highl = plik_lite_binned(clik_folder='plik_lite_v18_TT.clik',lslice=lslice,sim=sim)
-        elif highl=='plik_lite':
-            assert lslice.start in [2,30] and lslice.stop==2509
-            self.highl = clikwrap(clik_file='plik_lite_v18_TT.clik')
-        elif highl=='plik':
-            assert lslice.start in [2,30] and lslice.stop==2509
-            self.highl = clikwrap(
-                clik_file='plik_v18_TT.clik',
-                A_ps_100=param(150,min=0),
-                A_ps_143=param(60,min=0),
-                A_ps_217=param(60,min=0),
-                A_cib_143=param(10,min=0),
-                A_cib_217=param(40,min=0),
-                A_sz=param(5,scale=1,range=(0,20)),
-                r_ps=param(0.7,range=(0,1)),
-                r_cib=param(0.7,range=(0,1)),
-                n_Dl_cib=param(0.8,scale=0.2,gaussian_prior=(0.8,0.2)),
-                cal_100=param(1,scale=0.001),
-                cal_217=param(1,scale=0.001),
-                xi_sz_cib=param(0.5,range=(-1,1),scale=0.2),
-                A_ksz=param(1,range=(0,5)),
-                Bm_1_1=param(0,gaussian_prior=(0,1),scale=1)
-            )
+        if lslice.stop > 30:
+            if highl=='custom':
+                self.highl = plik_lite_binned(clik_folder='plik_lite_v18_TT.clik',lslice=lslice,sim=sim)
+            elif highl=='plik_lite':
+                assert lslice.start in [2,30] and lslice.stop==2509
+                self.highl = clikwrap(clik_file='plik_lite_v18_TT.clik')
+            elif highl=='plik':
+                assert lslice.start in [2,30] and lslice.stop==2509
+                self.highl = clikwrap(
+                    clik_file='plik_v18_TT.clik',
+                    A_ps_100=param(150,min=0),
+                    A_ps_143=param(60,min=0),
+                    A_ps_217=param(60,min=0),
+                    A_cib_143=param(10,min=0),
+                    A_cib_217=param(40,min=0),
+                    A_sz=param(5,scale=1,range=(0,20)),
+                    r_ps=param(0.7,range=(0,1)),
+                    r_cib=param(0.7,range=(0,1)),
+                    n_Dl_cib=param(0.8,scale=0.2,gaussian_prior=(0.8,0.2)),
+                    cal_100=param(1,scale=0.001),
+                    cal_217=param(1,scale=0.001),
+                    xi_sz_cib=param(0.5,range=(-1,1),scale=0.2),
+                    A_ksz=param(1,range=(0,5)),
+                    Bm_1_1=param(0,gaussian_prior=(0,1),scale=1)
+                )
+            else:
+                raise ValueError(highl)
         else:
-            raise ValueError(highl)
+            assert lslice.stop==30, "can't slice lowl likelihood"
+            self.highl = None
 
         if lslice.start==2:
             if sim:
@@ -208,7 +219,12 @@ class planck(SlikPlugin):
         self.priors = get_plugin('likelihoods.priors')(self)
 
         #pick available covariance file closest to current lslice
-        cov = sorted([(norm(array(map(int,re.search('([0-9]+)_([0-9]+)',f).groups()))-[lslice.start,lslice.stop]),f) for f in glob('covs/%s/*'%args.model)])[0][1]
+        cov = sorted([(norm(array(map(int,re.search('([0-9]+)_([0-9]+)',f).groups()))-[lslice.start,lslice.stop]),f) 
+                      for f in glob('covs/%s/*'%model)])
+        if cov: cov = cov[0][1]
+        else: 
+            print("Warning: no covariance file found")
+            cov = None
 
         if action=='minimize':
             self.sampler = Minimizer(self,whiten_cov=cov)
@@ -245,19 +261,21 @@ class planck(SlikPlugin):
 
     def __call__(self):
         self.cosmo.As = exp(self.cosmo.logA)*1e-10
-        self.highl.A_Planck = self.highl.calPlanck = self.calPlanck
-        if self.lowl: self.lowl.A_planck = self.calPlanck
+        if self.highl: 
+            self.highl.A_Planck = self.highl.calPlanck = self.calPlanck
+        if self.lowl: 
+            self.lowl.A_planck = self.calPlanck
 
-        p = {k:self.cosmo[k] for k in ['ns','As','ombh2','omch2','H0','tau','ALens']}
+        p = {k:self.cosmo[k] for k in ['ns','As','ombh2','omch2','H0','tau','ALens'] if k in self.cosmo}
         p.update(self.get('cambargs',{}))
-        p['lmax']=3000
+        p['lmax'] = 3000
         cmb = self.get_cmb(**p)
         self.clTT = cmb['cl_TT'][:2510]
         self.clTT[2:] *= (2*pi/arange(2,2510)/(arange(2,2510)+1))
         if self.derived: self.add_derived()
 
         return lsum(lambda: self.priors(self),
-                    lambda: self.highl(self.clTT),
+                    lambda: self.highl(self.clTT) if self.highl else 0,
                     lambda: self.lowl(self.clTT) if self.lowl else 0,
                     lambda: self.simlow(cmb) if self.simlow else 0)
 
@@ -321,9 +339,9 @@ if __name__=='__main__':
     parser.add_argument('--debug', action='store_true',help='print debug output')
     parser.add_argument('--derived', action='store_true',help='output derived parameters to chains')
     parser.add_argument('--derived_cls',help="any of pp,TT to output to chain")
-    parser.add_argument('--model', default='lcdm',help='[lcdm|lcdmalens]')
+    parser.add_argument('--model', default='lcdm',help='[lcdm|lcdmalens|Asns]')
     args = parser.parse_args()
-
+    
     base_dir = osp.join(args.model,args.highl,args.lowl,
                         'simlow' if args.simlow else ('tau_'+'_'.join('%.3f'%x for x in atleast_1d(eval(args.tau)))))
 
@@ -344,7 +362,8 @@ if __name__=='__main__':
                       highl=args.highl,lowl=args.lowl,simlow=args.simlow,
                       derived=args.derived,
                       derived_cls=args.derived_cls.split(',') if args.derived_cls else None,
-                      output_file=output_file))
+                      output_file=output_file,
+                      model=args.model))
         for _ in p.sample(): pass
 
     else:
@@ -365,7 +384,13 @@ if __name__=='__main__':
 
             #compute result
             random.seed(seed)
-            s = Slik(planck(lslice=slice(*lslice),sim=sim,lowl=args.lowl,highl=args.highl,simlow=args.simlow,tau=eval(args.tau)))
+            s = Slik(planck(lslice=slice(*lslice),
+                            sim=sim,
+                            lowl=args.lowl,
+                            highl=args.highl,
+                            simlow=args.simlow,
+                            tau=eval(args.tau),
+                            model=args.model))
             bf,x0,res = s.sample().next()
 
             #postprocessing
