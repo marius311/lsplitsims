@@ -328,6 +328,7 @@ if __name__=='__main__':
     parser.add_argument('--lowl', default='fl', help='[comm|fsky|fl]')
     parser.add_argument('--simlow', action='store_true', help='use simlow likelihod instead of tau prior')    
     parser.add_argument('--tau',  default="(0.07,0.02)", help='(mean,std) prior on tau, or just value to fix tau to')
+    parser.add_argument('--sampletau',  action="store_true", help="sample tau from its prior for each sim")
     parser.add_argument('--lslices', help='e.g. [(2,800),(2,2500)]')
     parser.add_argument('--seeds', help='e.g. range(10)')
     parser.add_argument('--progress', metavar='MAXSTEPS', type=float, help='write progress to file')
@@ -381,15 +382,22 @@ if __name__=='__main__':
                 mspec_log('Skipped: %s %s'%(lslice,'sim(%s)'%seed if seed is not None else ''))
                 return
 
+            #set seed
+            random.seed(seed)
+
+            #prep tau
+            tau = eval(args.tau)
+            if args.sampletau:
+                tau = normal(*tau), tau[1]
+                print "tau prior: %f +/o %f"%tau
 
             #compute result
-            random.seed(seed)
             s = Slik(planck(lslice=slice(*lslice),
                             sim=sim,
                             lowl=args.lowl,
                             highl=args.highl,
                             simlow=args.simlow,
-                            tau=eval(args.tau),
+                            tau=tau,
                             model=args.model))
             bf,x0,res = s.sample().next()
 
@@ -407,6 +415,7 @@ if __name__=='__main__':
                        'highl_dof':p.highl.bslice.stop - p.highl.bslice.start,
                        'clTT':p.clTT,
                        'res':res,
+                       'inputtau':tau,
                        'x0':x0,
                        'seed':seed})
             pp['cosmo.s8omm1/4']=pp['cosmo.sigma8']*(pp['cosmo.ommh2']/(pp['cosmo.H0']/100.)**2)**0.25
